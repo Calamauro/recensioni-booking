@@ -126,6 +126,7 @@ try:
     strutture = list(assegnazioni)
     df = L.prepara(q("recensioni", select="*", struttura=filtro_in(strutture), order="data_recensione.desc")
                    if strutture else [])
+    esclusi = {e["recensione_id"] for e in q("esclusioni", select="recensione_id", user_id=f"eq.{utente}")}
     ultima_esec = q("esecuzioni", select="eseguita_il,nuove,esito,dettagli", order="eseguita_il.desc", limit=1)
 except SessioneScaduta:
     esci()
@@ -175,8 +176,12 @@ with st.expander("⚙️ Filtri", expanded=False):
 
 criterio, metodo = L.CRITERI[crit_label], L.METODI[metodo_label]
 dal, al = L.periodo(scelta, oggi, inizio, mese, dal_s, al_s)
-dff = L.filtra(df, assegnazioni, dal, al, criterio)
-st.caption(f"Periodo: **{dal:%d/%m/%Y} – {al:%d/%m/%Y}** · {crit_label.lower()} · {len(dff)} recensioni")
+df["escluso"] = df["id"].isin(esclusi) if not df.empty else pd.Series(dtype=bool)
+df_calc = df[~df["escluso"]] if not df.empty else df          # le escluse non contano nei calcoli
+dff = L.filtra(df_calc, assegnazioni, dal, al, criterio)
+n_escl = int(L.filtra(df, assegnazioni, dal, al, criterio)["escluso"].sum()) if not df.empty else 0
+st.caption(f"Periodo: **{dal:%d/%m/%Y} – {al:%d/%m/%Y}** · {crit_label.lower()} · {len(dff)} recensioni"
+           + (f" · {n_escl} escluse dal calcolo" if n_escl else ""))
 
 # =================================================================== bonus
 stag = L.stagione(al) if stag_label == "Automatica" else stag_label
@@ -237,7 +242,8 @@ st.dataframe(
 # =================================================================== andamento mensile (12 mesi fissi)
 mesi12 = L.mesi_fissi(inizio)
 fine12 = (pd.Timestamp(mesi12[-1]) + pd.offsets.MonthEnd(0)).date()
-df12 = L.filtra(df, assegnazioni, inizio, fine12, criterio)
+df12_tutte = L.filtra(df, assegnazioni, inizio, fine12, criterio)       # per l'elenco (anche le escluse)
+df12 = L.filtra(df_calc, assegnazioni, inizio, fine12, criterio)       # per i calcoli
 mens = L.mensile(df12, strutture, mesi12, scaglioni, metodo)
 st.subheader(f"Andamento mensile ({nome_mese(mesi12[0]).lower()} – {nome_mese(mesi12[-1]).lower()})")
 
@@ -251,45 +257,100 @@ fig.update_layout(height=300, barmode="group", yaxis_range=[7, 10], margin=dict(
                   legend=dict(orientation="h", y=-0.25), separators=",.")
 st.plotly_chart(fig, config={"displayModeBar": False})
 
-st.caption("Tocca un mese per vedere le sue recensioni.")
+st.caption("Tocca un mese per vedere le sue recensioni." +
+           (" Spunta **Escludi** per togliere una recensione dal calcolo." if admin else ""))
+
+
+def mese_anno(d) -> str:
+    return "" if d is None or pd.isna(d) else f"{MESI_IT[d.month - 1][:3]} {d.year}"
+
+
+def salva_esclusioni(prima: pd.DataFrame, dopo: pd.DataFrame):
+    cambi = dopo[dopo["Escludi"] != prima["Escludi"]]
+    if cambi.empty:
+        return
+    da_aggiungere = [{"user_id": utente, "recensione_id": i, "escluso_da": io}
+                     for i in cambi.loc[cambi["Escludi"], "id"]]
+    da_togliere = list(cambi.loc[~cambi["Escludi"], "id"])
+    try:
+        if da_aggiungere:
+            db.inserisci(token(), "esclusioni", da_aggiungere)
+        if da_togliere:
+            db.elimina(token(), "esclusioni", {"user_id": f"eq.{utente}", "recensione_id": filtro_in(da_togliere)})
+    except SessioneScaduta:
+        esci()
+        st.rerun()
+    except Exception:
+        st.error("Impossibile salvare l'esclusione (serve il ruolo admin).")
+        return
+    st.cache_data.clear()
+    st.rerun()
+
+
 for _, r in mens.iterrows():
     m = r["Mese"]
     parti = []
     for s_ in strutture:
         if r[f"N° {s_}"]:
             parti.append(f"{s_.replace('Magenta ', '').split()[-1]} {L.num(r[f'Media {s_}'])} ({r[f'N° {s_}']})")
-    n_tot = sum(int(r[f"N° {s_}"]) for s_ in strutture)
-    if n_tot:
+    if df12_tutte.empty:
+        dm = df12_tutte
+    else:
+        rif = pd.to_datetime(df12_tutte["data_riferimento"])
+        dm = df12_tutte[(rif.dt.year == m.year) & (rif.dt.month == m.month)].sort_values("data_recensione")
+    n_escl_m = int(dm["escluso"].sum()) if not dm.empty else 0
+    escl_txt = f" · {n_escl_m} esclusa" + ("e" if n_escl_m > 1 else "") if n_escl_m else ""
+    if parti:
         etichetta = (f"**{nome_mese(m)}** · {' · '.join(parti)} · media **{L.num(r['Media delle strutture'])}** "
-                     f"· bonus **{L.perc(r['Bonus del mese'])}** ({r['Stagione'].lower()})")
+                     f"· bonus **{L.perc(r['Bonus del mese'])}** ({r['Stagione'].lower()}){escl_txt}")
+    elif not dm.empty:
+        etichetta = f"{nome_mese(m)} · tutte escluse ({r['Stagione'].lower()})"
     else:
         etichetta = f"{nome_mese(m)} · nessuna recensione ({r['Stagione'].lower()})"
     with st.expander(etichetta):
-        if n_tot:
-            rif = pd.to_datetime(df12["data_riferimento"])
-            dm = df12[(rif.dt.year == m.year) & (rif.dt.month == m.month)].sort_values("data_recensione")
-            vista = dm[["data_recensione", "struttura", "punteggio", "nome", "paese", "titolo", "negativo"]].copy()
-            vista["struttura"] = vista["struttura"].str.replace("Magenta ", "")
-            st.dataframe(vista, hide_index=True, column_config={
-                "data_recensione": st.column_config.DateColumn("Data", format="DD/MM"),
-                "struttura": "Struttura", "punteggio": st.column_config.NumberColumn("Voto", format="%.1f"),
-                "nome": "Ospite", "paese": "Paese", "titolo": "Titolo", "negativo": "👎",
-            })
-        else:
+        if dm.empty:
             st.caption("Ancora nessuna recensione in questo mese.")
+            continue
+        vista = pd.DataFrame({
+            "Escludi": dm["escluso"].astype(bool).values,
+            "Data": pd.to_datetime(dm["data_recensione"]).dt.strftime("%d/%m").values,
+            "Soggiorno": [mese_anno(d) for d in dm["mese_soggiorno"]],
+            "Struttura": dm["struttura"].str.replace("Magenta ", "").values,
+            "Voto": dm["punteggio"].values,
+            "Ospite": dm["nome"].fillna("").values,
+            "Paese": dm["paese"].fillna("").values,
+            "Titolo": dm["titolo"].fillna("").values,
+            "👎": dm["negativo"].fillna("").values,
+            "id": dm["id"].values,
+        })
+        config = {
+            "Escludi": st.column_config.CheckboxColumn("Escludi", help="Non conta in medie e bonus"),
+            "Voto": st.column_config.NumberColumn(format="%.1f"),
+            "id": None,                                   # nascosta
+        }
+        if admin:
+            modificata = st.data_editor(vista, hide_index=True, column_config=config, key=f"mese_{m:%Y%m}",
+                                        disabled=[c for c in vista.columns if c != "Escludi"])
+            salva_esclusioni(vista, modificata)
+        else:
+            st.dataframe(vista, hide_index=True, column_config=config)
 
 # =================================================================== elenco recensioni
-with st.expander(f"📝 Recensioni del periodo ({len(dff)})"):
-    if not dff.empty:
-        elenco = dff.sort_values("data_recensione", ascending=False)[
-            ["data_recensione", "struttura", "punteggio", "titolo", "positivo", "negativo",
+dff_tutte = L.filtra(df, assegnazioni, dal, al, criterio)
+with st.expander(f"📝 Recensioni del periodo ({len(dff_tutte)})"):
+    if not dff_tutte.empty:
+        elenco = dff_tutte.sort_values("data_recensione", ascending=False)[
+            ["escluso", "data_recensione", "struttura", "punteggio", "titolo", "positivo", "negativo",
              "nome", "paese", "tipo_viaggiatore", "mese_soggiorno"]].copy()
+        for c in ("titolo", "positivo", "negativo", "nome", "paese", "tipo_viaggiatore"):
+            elenco[c] = elenco[c].fillna("")
         elenco["struttura"] = elenco["struttura"].str.replace("Magenta ", "")
         st.dataframe(elenco, hide_index=True, column_config={
             "data_recensione": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
             "struttura": "Struttura", "punteggio": st.column_config.NumberColumn("Voto", format="%.1f"),
             "titolo": "Titolo", "positivo": "👍", "negativo": "👎", "nome": "Ospite", "paese": "Paese",
             "tipo_viaggiatore": "Tipo", "mese_soggiorno": st.column_config.DateColumn("Soggiorno", format="MM/YYYY"),
+            "escluso": st.column_config.CheckboxColumn("Esclusa"),
         })
         st.download_button("Scarica CSV", elenco.to_csv(index=False).encode("utf-8-sig"),
                            file_name=f"recensioni_{dal:%Y%m%d}_{al:%Y%m%d}.csv", mime="text/csv")

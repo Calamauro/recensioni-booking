@@ -75,6 +75,23 @@ class Supa:
             offset += passo
 
 
+    # -------------------------------------------------------------- scritture (solo admin, lo impone il database)
+    def inserisci(self, token: str, tabella: str, righe: list[dict]) -> None:
+        r = requests.post(f"{self.url}/rest/v1/{tabella}",
+                          headers={**self._h(token), "Prefer": "resolution=ignore-duplicates,return=minimal"},
+                          json=righe, timeout=30)
+        if r.status_code == 401:
+            raise SessioneScaduta()
+        r.raise_for_status()
+
+    def elimina(self, token: str, tabella: str, filtri: dict) -> None:
+        r = requests.delete(f"{self.url}/rest/v1/{tabella}", params=filtri,
+                            headers={**self._h(token), "Prefer": "return=minimal"}, timeout=30)
+        if r.status_code == 401:
+            raise SessioneScaduta()
+        r.raise_for_status()
+
+
 def filtro_in(valori: list[str]) -> str:
     """Filtro PostgREST "in" con valori tra virgolette (i nomi contengono spazi)."""
     return "in.(" + ",".join('"' + v.replace('"', '\\"') + '"' for v in valori) + ")"

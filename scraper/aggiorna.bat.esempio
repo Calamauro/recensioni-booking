@@ -1,0 +1,14 @@
+@echo off
+REM ==================================================================
+REM  PIANO B: scraping dal tuo PC che scrive comunque su Supabase.
+REM  1) Copia questo file come "aggiorna.bat" nella cartella scraper
+REM  2) Inserisci URL e chiave SECRET di Supabase qui sotto
+REM  3) Pianificalo con "Utilità di pianificazione" di Windows (vedi LEGGIMI)
+REM  NON caricare aggiorna.bat su GitHub: contiene la chiave segreta.
+REM ==================================================================
+cd /d "%~dp0"
+set SUPABASE_URL=https://xxxxxxxxxxxx.supabase.co
+set SUPABASE_KEY=sb_secret_xxxxxxxxxxxx
+set HEADLESS=1
+call "%USERPROFILE%\anaconda3\Scripts\activate.bat"
+python booking_reviews.py >> log_scraping.txt 2>&1

@@ -143,6 +143,7 @@ def mensile(df_f: pd.DataFrame, strutture: list[str], mesi: list[date],
                 medie.append(p.mean())
         r["Media delle strutture"] = sum(medie) / len(medie) if medie else None
         mb = media_bonus(dm, strutture, metodo) if not dm.empty else None
+        r["Media per bonus"] = mb                     # col metodo scelto (es. tutte le recensioni insieme)
         r["Stagione"] = stagione(m)
         r["Bonus del mese"] = bonus_per(mb, scaglioni, stagione(m)) if mb is not None else None
         righe.append(r)

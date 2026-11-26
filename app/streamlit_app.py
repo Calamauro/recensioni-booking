@@ -284,8 +284,9 @@ fig = go.Figure()
 etich = [f"{MESI_IT[m.month - 1][:3]} {str(m.year)[2:]}" for m in mens["Mese"]]
 for s_ in strutture:
     fig.add_bar(x=etich, y=mens[f"Media {s_}"], name=s_.replace("Magenta ", ""))
-fig.add_scatter(x=etich, y=mens["Media delle strutture"], name="Media strutture",
-                mode="lines+markers", line={"color": BLU, "width": 3}, connectgaps=False)
+fig.add_bar(x=etich, y=mens["Media per bonus"],
+            name="Media complessiva" if metodo == "tutte_recensioni" else "Media delle strutture",
+            marker_color="#8E44AD")                     # viola: la media che conta per il bonus
 fig.update_layout(height=300, barmode="group", yaxis_range=[7, 10], margin=dict(l=10, r=10, t=10, b=10),
                   legend=dict(orientation="h", y=-0.25), separators=",.")
 st.plotly_chart(fig, config={"displayModeBar": False})
@@ -342,7 +343,7 @@ for _, r in mens.iterrows():
     n_escl_m = int(dm["escluso"].sum()) if not dm.empty else 0
     escl_txt = f" · {n_escl_m} esclusa" + ("e" if n_escl_m > 1 else "") if n_escl_m else ""
     if parti:
-        etichetta = (f"**{nome_mese(m)}** · {' · '.join(parti)} · media **{L.num(r['Media delle strutture'])}** "
+        etichetta = (f"**{nome_mese(m)}** · {' · '.join(parti)} · media **{L.num(r['Media per bonus'])}** "
                      f"· bonus **{L.perc(r['Bonus del mese'])}** ({r['Stagione'].lower()}){escl_txt}")
     elif not dm.empty:
         etichetta = f"{nome_mese(m)} · tutte escluse ({r['Stagione'].lower()})"

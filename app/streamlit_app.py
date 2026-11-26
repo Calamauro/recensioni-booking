@@ -258,7 +258,7 @@ fig.update_layout(height=300, barmode="group", yaxis_range=[7, 10], margin=dict(
 st.plotly_chart(fig, config={"displayModeBar": False})
 
 st.caption("Tocca un mese per vedere le sue recensioni." +
-           (" Spunta **Escludi** per togliere una recensione dal calcolo." if admin else ""))
+           " Spunta **Escludi** per togliere una recensione dal calcolo (es. giorni di ferie o riposo).")
 
 
 def mese_anno(d) -> str:
@@ -281,7 +281,7 @@ def salva_esclusioni(prima: pd.DataFrame, dopo: pd.DataFrame):
         esci()
         st.rerun()
     except Exception:
-        st.error("Impossibile salvare l'esclusione (serve il ruolo admin).")
+        st.error("Impossibile salvare l'esclusione, riprova tra poco.")
         return
     st.cache_data.clear()
     st.rerun()
@@ -328,7 +328,7 @@ for _, r in mens.iterrows():
             "Voto": st.column_config.NumberColumn(format="%.1f"),
             "id": None,                                   # nascosta
         }
-        if admin:
+        if admin or utente == io:
             modificata = st.data_editor(vista, hide_index=True, column_config=config, key=f"mese_{m:%Y%m}",
                                         disabled=[c for c in vista.columns if c != "Escludi"])
             salva_esclusioni(vista, modificata)

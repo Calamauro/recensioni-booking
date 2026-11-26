@@ -220,6 +220,39 @@ gauge = go.Figure(go.Indicator(
 gauge.update_layout(height=260, margin=dict(l=25, r=25, t=30, b=0), separators=",.")
 st.plotly_chart(gauge, config={"displayModeBar": False})
 
+# --- simulazione: voti fittizi, non salvati da nessuna parte
+with st.expander("🧪 Simula voti (prove e stime)"):
+    st.caption("Aggiungi fino a 10 voti ipotetici per vedere come cambierebbero media e bonus. "
+               "Non vengono salvati e non toccano i dati reali.")
+    vuota = pd.DataFrame({"Struttura": pd.Series(dtype="object"), "Voto": pd.Series(dtype="float")})
+    sim = st.data_editor(
+        vuota, num_rows="dynamic", hide_index=True, key="simulazione",
+        column_config={
+            "Struttura": st.column_config.SelectboxColumn("Struttura", options=strutture, required=True,
+                                                          default=strutture[0]),
+            "Voto": st.column_config.NumberColumn("Voto", min_value=1, max_value=10, step=1, default=10,
+                                                  required=True),
+        })
+    sim = sim.dropna(subset=["Struttura", "Voto"]).head(10)
+    if len(sim):
+        finti = pd.DataFrame({"struttura": sim["Struttura"].values, "punteggio": sim["Voto"].astype(float).values,
+                              "data_riferimento": al, "id": [f"sim{i}" for i in range(len(sim))]})
+        dff_sim = pd.concat([dff, finti], ignore_index=True)
+        media_sim = L.media_bonus(dff_sim, strutture, metodo)
+        bonus_sim = L.bonus_per(media_sim, scaglioni, stag)
+        prossimo_sim = L.prossimo_scaglione(media_sim, scaglioni, stag)
+        s1, s2, s3 = st.columns(3)
+        s1.metric("Media simulata", L.num(media_sim),
+                  None if media is None else f"{media_sim - media:+.2f}".replace(".", ","), delta_color="normal")
+        s2.metric("Bonus simulato", L.perc(bonus_sim),
+                  None if bonus_sim == bonus else f"{(bonus_sim - bonus) * 100:+.0f} punti %")
+        s3.metric("Recensioni", f"{len(dff_sim)}", f"+{len(sim)} simulate", delta_color="off")
+        if prossimo_sim:
+            st.caption(f"Prossimo scaglione: {L.num(prossimo_sim[0], 1)} → {L.perc(prossimo_sim[1])} "
+                       f"(mancano {L.num(prossimo_sim[0] - media_sim)})")
+        if len(sim) == 10:
+            st.caption("Massimo 10 voti simulati.")
+
 with st.expander(f"📊 Tabella scaglioni ({stag.lower()})"):
     col_b = 1 if stag == "Inverno" else 2
     tab_s = pd.DataFrame([{"Media da": L.num(x[0], 1), "Bonus": L.perc(x[col_b]),
@@ -265,9 +298,12 @@ def mese_anno(d) -> str:
     return "" if d is None or pd.isna(d) else f"{MESI_IT[d.month - 1][:3]} {d.year}"
 
 
-def salva_esclusioni(prima: pd.DataFrame, dopo: pd.DataFrame):
+def salva_esclusioni(prima: pd.DataFrame, dopo: pd.DataFrame, mese_key: str):
+    # il mese resta aperto dopo il ricalcolo
+    st.session_state["mese_aperto"] = mese_key
     cambi = dopo[dopo["Escludi"] != prima["Escludi"]]
     if cambi.empty:
+        st.toast("Nessuna modifica da salvare")
         return
     da_aggiungere = [{"user_id": utente, "recensione_id": i, "escluso_da": io}
                      for i in cambi.loc[cambi["Escludi"], "id"]]
@@ -280,9 +316,14 @@ def salva_esclusioni(prima: pd.DataFrame, dopo: pd.DataFrame):
     except SessioneScaduta:
         esci()
         st.rerun()
-    except Exception:
-        st.error("Impossibile salvare l'esclusione, riprova tra poco.")
+    except Exception as e:
+        dettaglio = getattr(getattr(e, "response", None), "text", "") or str(e)
+        st.error(f"Impossibile salvare le esclusioni. Dettaglio tecnico: {dettaglio[:300]}")
         return
+    # nuova "versione" della tabella: l'editor riparte pulito dai dati salvati
+    st.session_state["ver_escl"] = st.session_state.get("ver_escl", 0) + 1
+    st.session_state["msg_escl"] = (f"Salvato: {len(da_aggiungere)} escluse, {len(da_togliere)} riammesse. "
+                                    "Medie e bonus ricalcolati.")
     st.cache_data.clear()
     st.rerun()
 
@@ -307,7 +348,8 @@ for _, r in mens.iterrows():
         etichetta = f"{nome_mese(m)} · tutte escluse ({r['Stagione'].lower()})"
     else:
         etichetta = f"{nome_mese(m)} · nessuna recensione ({r['Stagione'].lower()})"
-    with st.expander(etichetta):
+    mese_key = f"{m:%Y%m}"
+    with st.expander(etichetta, expanded=st.session_state.get("mese_aperto") == mese_key):
         if dm.empty:
             st.caption("Ancora nessuna recensione in questo mese.")
             continue
@@ -328,12 +370,16 @@ for _, r in mens.iterrows():
             "Voto": st.column_config.NumberColumn(format="%.1f"),
             "id": None,                                   # nascosta
         }
-        if admin or utente == io:
-            modificata = st.data_editor(vista, hide_index=True, column_config=config, key=f"mese_{m:%Y%m}",
-                                        disabled=[c for c in vista.columns if c != "Escludi"])
-            salva_esclusioni(vista, modificata)
-        else:
-            st.dataframe(vista, hide_index=True, column_config=config)
+        if st.session_state.get("mese_aperto") == mese_key and st.session_state.get("msg_escl"):
+            st.success(st.session_state.pop("msg_escl"))
+        # form: si possono spuntare più caselle e poi confermare una volta sola
+        with st.form(f"form_{mese_key}", border=False):
+            modificata = st.data_editor(
+                vista, hide_index=True, column_config=config,
+                key=f"mese_{mese_key}_{st.session_state.get('ver_escl', 0)}",
+                disabled=[c for c in vista.columns if c != "Escludi"])
+            if st.form_submit_button("✅ Applica e ricalcola", type="primary"):
+                salva_esclusioni(vista, modificata, mese_key)
 
 # =================================================================== elenco recensioni
 dff_tutte = L.filtra(df, assegnazioni, dal, al, criterio)

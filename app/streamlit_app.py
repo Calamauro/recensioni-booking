@@ -223,12 +223,14 @@ st.plotly_chart(gauge, config={"displayModeBar": False})
 # --- simulazione: voti fittizi, non salvati da nessuna parte
 with st.expander("🧪 Simula voti (prove e stime)"):
     st.caption("Aggiungi fino a 10 voti ipotetici per vedere come cambierebbero media e bonus. "
+               "Usa **Altra struttura** per i voti presi in strutture non tue (es. coprendo una collega). "
                "Non vengono salvati e non toccano i dati reali.")
+    ALTRA = "Altra struttura"           # es. voti presi coprendo una collega in un'altra struttura
     vuota = pd.DataFrame({"Struttura": pd.Series(dtype="object"), "Voto": pd.Series(dtype="float")})
     sim = st.data_editor(
         vuota, num_rows="dynamic", hide_index=True, key="simulazione",
         column_config={
-            "Struttura": st.column_config.SelectboxColumn("Struttura", options=strutture, required=True,
+            "Struttura": st.column_config.SelectboxColumn("Struttura", options=strutture + [ALTRA], required=True,
                                                           default=strutture[0]),
             "Voto": st.column_config.NumberColumn("Voto", min_value=1, max_value=10, step=1, default=10,
                                                   required=True),
@@ -238,7 +240,7 @@ with st.expander("🧪 Simula voti (prove e stime)"):
         finti = pd.DataFrame({"struttura": sim["Struttura"].values, "punteggio": sim["Voto"].astype(float).values,
                               "data_riferimento": al, "id": [f"sim{i}" for i in range(len(sim))]})
         dff_sim = pd.concat([dff, finti], ignore_index=True)
-        media_sim = L.media_bonus(dff_sim, strutture, metodo)
+        media_sim = L.media_bonus(dff_sim, strutture + [ALTRA], metodo)
         bonus_sim = L.bonus_per(media_sim, scaglioni, stag)
         prossimo_sim = L.prossimo_scaglione(media_sim, scaglioni, stag)
         s1, s2, s3 = st.columns(3)

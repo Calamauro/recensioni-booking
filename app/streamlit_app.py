@@ -82,6 +82,8 @@ h3 { font-size: 1.15rem !important; margin-top: 0.6rem !important; }
 .bm-note { font-size:0.8rem; color:#6B7A89; margin-top:2px; }
 .bm-pill { background:#FBF3DC; color:#7A5F0E; border-radius:999px; padding:3px 10px; font-size:0.78rem;
            font-weight:600; white-space:nowrap; }
+.bm-avviso { background:#FBF3DC; color:#5E4A0B; border:1px solid #EAD9A0; border-radius:10px;
+              padding:8px 12px; font-size:0.85rem; margin: 2px 0 8px 0; }
 .bm-periodo { font-size:0.82rem; color:#6B7A89; background:#F4F7FA; border-radius:10px; padding:7px 12px;
               margin: 4px 0 8px 0; }
 /* expander e tabelle più morbidi */
@@ -318,33 +320,6 @@ def card_numeri(media_, bonus_, prossimo_, stag_, titolo_media="Media per il bon
         f'<div class="bm-card bm-full">{pross}</div></div>', unsafe_allow_html=True)
 
 
-# --- contagiri: uno spicchio per scaglione, tinte di blu; la barra oro è la media attuale
-soglie = [x[0] for x in sorted(scaglioni)]
-inizio_scala = max(0.0, (min(soglie) - 0.2) // 0.5 * 0.5) if soglie else 8.5
-bordi = [inizio_scala] + [x for x in soglie if inizio_scala < x < 10] + [10.0]
-colori = sfumatura(len(bordi) - 1)
-passi = [{"range": [bordi[i], bordi[i + 1]], "color": colori[i]} for i in range(len(bordi) - 1)]
-gauge = go.Figure(go.Indicator(
-    mode="gauge+number" if media is not None else "gauge",
-    value=media if media is not None else inizio_scala,
-    number={"valueformat": ".2f", "font": {"size": 46, "color": BLU, "family": "Inter, sans-serif"}},
-    gauge={"axis": {"range": [inizio_scala, 10], "tickvals": [x for x in bordi if round(x * 10) % 2 == 0 or x == bordi[0]],
-                    "tickformat": ".1f", "tickcolor": "#B4C6D8", "tickfont": {"color": GRIGIO, "size": 11}},
-           "bar": {"color": ORO, "thickness": 0.32},
-           "bgcolor": "white", "borderwidth": 0,
-           "steps": passi,
-           "threshold": {"line": {"color": BLU, "width": 4}, "thickness": 0.95,
-                         "value": prossimo[0] if prossimo else 10}},
-))
-gauge.update_layout(height=240, margin=dict(l=28, r=28, t=24, b=0), separators=",.",
-                    paper_bgcolor="rgba(0,0,0,0)", font={"family": "Inter, sans-serif"})
-
-if sezione == SEZIONI[0]:
-    card_numeri(media, bonus, prossimo, stag)
-    st.plotly_chart(gauge, config={"displayModeBar": False})
-    if prossimo:
-        st.caption("La barra oro è la media attuale, la linea blu la soglia del prossimo scaglione.")
-
 # --- simulazione: voti ipotetici, salvati nel database (tabella simulazioni) per chi li ha inseriti
 ALTRA = "Altra struttura"               # es. voti presi coprendo una collega in un'altra struttura
 
@@ -395,54 +370,100 @@ chiave_sim = f"sim_base_{utente}"
 if chiave_sim not in st.session_state:           # primo accesso della sessione: riprende i voti salvati
     st.session_state[chiave_sim] = carica_sim()
     st.session_state[f"sim_ver_{utente}"] = 0
+sim = st.session_state[chiave_sim]
+n_sim = len(sim)
+if n_sim:
+    finti = pd.DataFrame({"struttura": sim["Struttura"].values, "punteggio": sim["Voto"].astype(float).values,
+                          "data_riferimento": al, "id": [f"sim{i}" for i in range(n_sim)]})
+    dff_sim = pd.concat([dff, finti], ignore_index=True)
+    media_vis = L.media_bonus(dff_sim, strutture + [ALTRA], metodo)
+    bonus_vis = L.bonus_per(media_vis, scaglioni, stag)
+    prossimo_vis = L.prossimo_scaglione(media_vis, scaglioni, stag)
+else:
+    dff_sim, media_vis, bonus_vis, prossimo_vis = dff, media, bonus, prossimo
+
+# --- contagiri: uno spicchio per scaglione, tinte di blu; la barra oro è la media attuale
+soglie = [x[0] for x in sorted(scaglioni)]
+inizio_scala = max(0.0, (min(soglie) - 0.2) // 0.5 * 0.5) if soglie else 8.5
+bordi = [inizio_scala] + [x for x in soglie if inizio_scala < x < 10] + [10.0]
+colori = sfumatura(len(bordi) - 1)
+passi = [{"range": [bordi[i], bordi[i + 1]], "color": colori[i]} for i in range(len(bordi) - 1)]
+gauge = go.Figure(go.Indicator(
+    mode="gauge+number" if media_vis is not None else "gauge",
+    value=media_vis if media_vis is not None else inizio_scala,
+    number={"valueformat": ".2f", "font": {"size": 46, "color": BLU, "family": "Inter, sans-serif"}},
+    gauge={"axis": {"range": [inizio_scala, 10], "tickvals": [x for x in bordi if round(x * 10) % 2 == 0 or x == bordi[0]],
+                    "tickformat": ".1f", "tickcolor": "#B4C6D8", "tickfont": {"color": GRIGIO, "size": 11}},
+           "bar": {"color": ORO, "thickness": 0.32},
+           "bgcolor": "white", "borderwidth": 0,
+           "steps": passi,
+           "threshold": {"line": {"color": BLU, "width": 4}, "thickness": 0.95,
+                         "value": prossimo_vis[0] if prossimo_vis else 10}},
+))
+gauge.update_layout(height=240, margin=dict(l=28, r=28, t=24, b=0), separators=",.",
+                    paper_bgcolor="rgba(0,0,0,0)", font={"family": "Inter, sans-serif"})
+
+if sezione == SEZIONI[0]:
+    if n_sim:
+        st.markdown(
+            f'<div class="bm-avviso">🧪 <b>Dati con simulazione</b>: {n_sim} vot{"o" if n_sim == 1 else "i"} '
+            f'ipotetic{"o" if n_sim == 1 else "i"} inclus{"o" if n_sim == 1 else "i"}. '
+            f'Senza simulazione: media {L.num(media)} · bonus {L.perc(bonus)}.</div>', unsafe_allow_html=True)
+        card_numeri(media_vis, bonus_vis, prossimo_vis, stag,
+                    titolo_media="Media per il bonus con simulazione",
+                    titolo_bonus=f"Bonus {stag.lower()} con simulazione")
+    else:
+        card_numeri(media, bonus, prossimo, stag)
+    st.plotly_chart(gauge, config={"displayModeBar": False})
+    if prossimo_vis:
+        st.caption("La barra oro è la media " + ("simulata" if n_sim else "attuale") +
+                   ", la linea blu la soglia del prossimo scaglione." +
+                   (" I voti simulati si modificano o azzerano nella sezione **🧪 Simulatore**." if n_sim else ""))
 
 if sezione == SEZIONI[2]:
     st.subheader("Simulatore di voti")
     salva_txt = ("Restano salvati anche quando chiudi l'app" if not st.session_state.get("sim_no_db")
                  else "Non vengono salvati")
-    st.caption("Aggiungi fino a 10 voti ipotetici per vedere come cambierebbero media e bonus. "
+    st.caption("Aggiungi fino a 10 voti ipotetici, poi tocca **Salva e simula**. "
                "Usa **Altra struttura** per i voti presi in strutture non tue (es. coprendo una collega). "
-               f"{salva_txt}; non toccano i dati reali.")
-    base_sim = st.session_state[chiave_sim]
-    sim = st.data_editor(
-        base_sim, num_rows="dynamic", hide_index=True, use_container_width=True,
-        key=f"simulazione_{utente}_{st.session_state[f'sim_ver_{utente}']}",
-        column_config={
-            "Struttura": st.column_config.SelectboxColumn("Struttura", options=strutture + [ALTRA], required=True,
-                                                          default=strutture[0] if strutture else ALTRA),
-            "Voto": st.column_config.NumberColumn("Voto", min_value=1, max_value=10, step=1, default=10,
-                                                  required=True),
-        })
-    sim = _pulisci_sim(sim)
-    # salvataggio automatico a ogni modifica
-    if _sim_firma(sim) != _sim_firma(base_sim):
-        if st.session_state.get("sim_no_db") or salva_sim(sim):
-            st.session_state[chiave_sim] = sim
+               f"{salva_txt} e si vedono anche in **📊 Panoramica**; non toccano i dati reali.")
+    with st.form(f"form_sim_{utente}", border=False):
+        modificata = st.data_editor(
+            sim, num_rows="dynamic", hide_index=True, use_container_width=True,
+            key=f"simulazione_{utente}_{st.session_state[f'sim_ver_{utente}']}",
+            column_config={
+                "Struttura": st.column_config.SelectboxColumn("Struttura", options=strutture + [ALTRA],
+                                                              required=True,
+                                                              default=strutture[0] if strutture else ALTRA),
+                "Voto": st.column_config.NumberColumn("Voto", min_value=1, max_value=10, step=1, default=10,
+                                                      required=True),
+            })
+        salva = st.form_submit_button("💾 Salva e simula", type="primary", use_container_width=True)
+    if salva:
+        nuova = _pulisci_sim(modificata)
+        if _sim_firma(nuova) == _sim_firma(sim):
+            st.toast("Nessuna modifica da salvare")
+        elif st.session_state.get("sim_no_db") or salva_sim(nuova):
+            st.session_state[chiave_sim] = nuova
             st.session_state[f"sim_ver_{utente}"] += 1      # l'editor riparte dai voti appena salvati
             st.rerun()
-    if len(sim) and st.button("🗑️ Azzera simulazione"):
+    if n_sim and st.button("🗑️ Azzera simulazione", use_container_width=True):
         if st.session_state.get("sim_no_db") or salva_sim(sim.iloc[0:0]):
             st.session_state[chiave_sim] = sim.iloc[0:0]
             st.session_state[f"sim_ver_{utente}"] += 1
             st.rerun()
-    if len(sim):
-        finti = pd.DataFrame({"struttura": sim["Struttura"].values, "punteggio": sim["Voto"].astype(float).values,
-                              "data_riferimento": al, "id": [f"sim{i}" for i in range(len(sim))]})
-        dff_sim = pd.concat([dff, finti], ignore_index=True)
-        media_sim = L.media_bonus(dff_sim, strutture + [ALTRA], metodo)
-        bonus_sim = L.bonus_per(media_sim, scaglioni, stag)
-        prossimo_sim = L.prossimo_scaglione(media_sim, scaglioni, stag)
-        d_media = "" if media is None else f"{media_sim - media:+.2f}".replace(".", ",")
-        d_bonus = "invariato" if bonus_sim == bonus else f"{(bonus_sim - bonus) * 100:+.0f} punti %"
-        card_numeri(media_sim, bonus_sim, prossimo_sim, stag, titolo_media="Media simulata",
+    if n_sim:
+        d_media = "" if media is None else f"{media_vis - media:+.2f}".replace(".", ",")
+        d_bonus = "invariato" if bonus_vis == bonus else f"{(bonus_vis - bonus) * 100:+.0f} punti %"
+        card_numeri(media_vis, bonus_vis, prossimo_vis, stag, titolo_media="Media simulata",
                     titolo_bonus="Bonus simulato",
-                    nota_media=f"{d_media} rispetto a oggi · {len(dff_sim)} recensioni (+{len(sim)})",
+                    nota_media=f"{d_media} rispetto a oggi · {len(dff_sim)} recensioni (+{n_sim})",
                     nota_bonus=d_bonus)
-        if len(sim) == 10:
+        if n_sim == 10:
             st.caption("Massimo 10 voti simulati.")
     else:
         card_numeri(media, bonus, prossimo, stag, titolo_media="Media attuale", titolo_bonus="Bonus attuale",
-                    nota_media="Aggiungi un voto qui sopra per simulare")
+                    nota_media="Aggiungi un voto qui sopra e tocca Salva e simula")
 
 if sezione == SEZIONI[0]:
     with st.expander(f"📋 Tabella scaglioni ({stag.lower()})"):

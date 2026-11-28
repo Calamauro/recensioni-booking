@@ -649,12 +649,57 @@ def euro(x: float) -> str:
 
 STIP_DEFAULT = {
     "fissi": pd.DataFrame({"Voce": ["Fisso"], "Importo €": [600.0], "Con bonus": [True]}),
-    "checkin": 0, "tariffa": 5.5, "bonus": None,
+    "checkin": 0, "tariffa": 5.5, "bonus": None, "bonus_auto": True,
     "coeff": 67.0, "imposta": 5.0, "inps": 27.0,
 }
-if "stip" not in st.session_state:
-    st.session_state["stip"] = {k: (v.copy() if isinstance(v, pd.DataFrame) else v) for k, v in STIP_DEFAULT.items()}
-    st.session_state["stip_ver"] = 0
+
+
+def stip_da_db() -> dict:
+    """Ultimi valori salvati del calcolatore (tabella stipendio), oppure quelli predefiniti."""
+    stp = {k: (v.copy() if isinstance(v, pd.DataFrame) else v) for k, v in STIP_DEFAULT.items()}
+    try:
+        righe = db.leggi(token(), "stipendio", {"select": "dati", "user_id": f"eq.{io}",
+                                                "operatore_id": f"eq.{utente}"})
+    except SessioneScaduta:
+        raise
+    except Exception:
+        st.session_state["stip_no_db"] = True          # tabella non ancora creata
+        return stp
+    if righe and isinstance(righe[0].get("dati"), dict):
+        d = righe[0]["dati"]
+        if d.get("fissi"):
+            stp["fissi"] = pd.DataFrame({"Voce": [x.get("voce", "Fisso") for x in d["fissi"]],
+                                         "Importo €": [float(x.get("importo", 0)) for x in d["fissi"]],
+                                         "Con bonus": [bool(x.get("con_bonus", False)) for x in d["fissi"]]})
+        for k in ("checkin", "tariffa", "bonus", "bonus_auto", "coeff", "imposta", "inps"):
+            if d.get(k) is not None:
+                stp[k] = d[k]
+    return stp
+
+
+def stip_salva(stp: dict) -> None:
+    if st.session_state.get("stip_no_db"):
+        return
+    dati = {"fissi": [{"voce": str(r["Voce"]), "importo": float(r["Importo €"]), "con_bonus": bool(r["Con bonus"])}
+                      for _, r in stp["fissi"].iterrows()],
+            **{k: stp.get(k) for k in ("checkin", "tariffa", "bonus", "bonus_auto", "coeff", "imposta", "inps")}}
+    try:
+        db.elimina(token(), "stipendio", {"user_id": f"eq.{io}", "operatore_id": f"eq.{utente}"})
+        db.inserisci(token(), "stipendio", [{"user_id": io, "operatore_id": utente, "dati": dati}])
+    except SessioneScaduta:
+        esci()
+        st.rerun()
+    except Exception as e:
+        dettaglio = getattr(getattr(e, "response", None), "text", "") or str(e)
+        st.warning(f"Dati dello stipendio non salvati: restano solo fino alla chiusura dell'app. "
+                   f"({dettaglio[:150]})")
+
+
+if st.session_state.get("stip_utente") != utente:   # primo accesso (o cambio operatore per l'admin)
+    st.session_state["stip"] = stip_da_db() if not DEMO else {
+        k: (v.copy() if isinstance(v, pd.DataFrame) else v) for k, v in STIP_DEFAULT.items()}
+    st.session_state["stip_utente"] = utente
+    st.session_state["stip_ver"] = st.session_state.get("stip_ver", 0) + 1
 
 if sezione == STIPENDIO:
     stp = st.session_state["stip"]
@@ -663,7 +708,8 @@ if sezione == STIPENDIO:
     bonus_app = bonus_vis if bonus_vis is not None else 0.0
     st.subheader("Calcolatore stipendio")
     st.caption("Stima del compenso lordo del mese e di quanto resta dopo imposta e contributi "
-               "(regime forfettario). Inserisci i dati e tocca **Calcola**.")
+               "(regime forfettario). Inserisci i dati e tocca **Calcola**"
+               + (": restano salvati anche quando chiudi l'app." if not st.session_state.get("stip_no_db") else "."))
     with st.form("form_stipendio", border=False):
         st.markdown("**Compensi fissi** · una riga per ogni fisso (es. settimana e weekend). "
                     "Spunta **Con bonus** solo sui fissi a cui si applica il bonus.")
@@ -680,11 +726,13 @@ if sezione == STIPENDIO:
         n_checkin = c1.number_input("Check-in del mese", min_value=0, step=1, value=int(stp["checkin"]))
         tariffa = c2.number_input("€ per check-in", min_value=0.0, step=0.5, value=float(stp["tariffa"]),
                                   format="%.2f")
+        auto = st.checkbox(
+            f"Usa il bonus calcolato dall'app ({L.perc(bonus_app)}" + (", con simulazione" if n_sim else "") + ")",
+            value=bool(stp.get("bonus_auto", True)),
+            help="Il bonus del periodo scelto nei filtri. Togli la spunta per inserire un bonus a mano.")
         bonus_pct = st.number_input(
-            "Bonus recensioni (%)", min_value=0.0, max_value=200.0, step=5.0,
-            value=float(stp["bonus"] if stp["bonus"] is not None else round(bonus_app * 100)),
-            help="Di partenza è il bonus calcolato dall'app per il periodo scelto nei filtri"
-                 + (" (con la simulazione)" if n_sim else "") + ". Puoi cambiarlo.")
+            "Bonus a mano (%) · usato solo senza la spunta qui sopra", min_value=0.0, max_value=200.0, step=5.0,
+            value=float(stp["bonus"] if stp["bonus"] is not None else round(bonus_app * 100)))
         with st.expander("⚙️ Parametri fiscali (regime forfettario)"):
             f1, f2, f3 = st.columns(3)
             coeff = f1.number_input("Coeff. redditività %", 0.0, 100.0, float(stp["coeff"]), 1.0,
@@ -699,13 +747,15 @@ if sezione == STIPENDIO:
         f["Voce"] = f["Voce"].fillna("Fisso")
         f["Con bonus"] = f["Con bonus"].fillna(False).astype(bool)
         st.session_state["stip"] = {"fissi": f, "checkin": n_checkin, "tariffa": tariffa, "bonus": bonus_pct,
+                                    "bonus_auto": auto,
                                     "coeff": coeff, "imposta": aliq, "inps": inps}
+        stip_salva(st.session_state["stip"])
         st.session_state["stip_ver"] += 1
         st.rerun()
 
     # ---- risultati (con i valori salvati)
     stp = st.session_state["stip"]
-    b = (stp["bonus"] if stp["bonus"] is not None else round(bonus_app * 100)) / 100
+    b = (bonus_app if stp.get("bonus_auto", True) or stp["bonus"] is None else stp["bonus"] / 100)
     tot_fissi = float(stp["fissi"]["Importo €"].sum()) if len(stp["fissi"]) else 0.0
     fissi_bonus = (float(stp["fissi"].loc[stp["fissi"]["Con bonus"].astype(bool), "Importo €"].sum())
                    if len(stp["fissi"]) else 0.0)

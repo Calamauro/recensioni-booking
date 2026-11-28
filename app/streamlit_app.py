@@ -648,7 +648,7 @@ def euro(x: float) -> str:
 
 
 STIP_DEFAULT = {
-    "fissi": pd.DataFrame({"Voce": ["Fisso"], "Importo €": [600.0]}),
+    "fissi": pd.DataFrame({"Voce": ["Fisso"], "Importo €": [600.0], "Con bonus": [True]}),
     "checkin": 0, "tariffa": 5.5, "bonus": None,
     "coeff": 67.0, "imposta": 5.0, "inps": 27.0,
 }
@@ -658,12 +658,15 @@ if "stip" not in st.session_state:
 
 if sezione == STIPENDIO:
     stp = st.session_state["stip"]
+    if "Con bonus" not in stp["fissi"]:                 # sessioni aperte prima di questa colonna
+        stp["fissi"]["Con bonus"] = [i == 0 for i in range(len(stp["fissi"]))]
     bonus_app = bonus_vis if bonus_vis is not None else 0.0
     st.subheader("Calcolatore stipendio")
     st.caption("Stima del compenso lordo del mese e di quanto resta dopo imposta e contributi "
                "(regime forfettario). Inserisci i dati e tocca **Calcola**.")
     with st.form("form_stipendio", border=False):
-        st.markdown("**Compensi fissi** · aggiungi una riga per ogni fisso (es. settimana e weekend)")
+        st.markdown("**Compensi fissi** · una riga per ogni fisso (es. settimana e weekend). "
+                    "Spunta **Con bonus** solo sui fissi a cui si applica il bonus.")
         fissi = st.data_editor(
             stp["fissi"], num_rows="dynamic", hide_index=True, use_container_width=True,
             key=f"stip_fissi_{st.session_state['stip_ver']}",
@@ -671,6 +674,7 @@ if sezione == STIPENDIO:
                 "Voce": st.column_config.TextColumn("Voce", default="Fisso"),
                 "Importo €": st.column_config.NumberColumn("Importo €", min_value=0.0, step=10.0, default=600.0,
                                                            format="%.2f €", required=True),
+                "Con bonus": st.column_config.CheckboxColumn("Con bonus", default=False),
             })
         c1, c2 = st.columns(2)
         n_checkin = c1.number_input("Check-in del mese", min_value=0, step=1, value=int(stp["checkin"]))
@@ -693,6 +697,7 @@ if sezione == STIPENDIO:
     if calcola:
         f = fissi.dropna(subset=["Importo €"]).reset_index(drop=True)
         f["Voce"] = f["Voce"].fillna("Fisso")
+        f["Con bonus"] = f["Con bonus"].fillna(False).astype(bool)
         st.session_state["stip"] = {"fissi": f, "checkin": n_checkin, "tariffa": tariffa, "bonus": bonus_pct,
                                     "coeff": coeff, "imposta": aliq, "inps": inps}
         st.session_state["stip_ver"] += 1
@@ -702,6 +707,8 @@ if sezione == STIPENDIO:
     stp = st.session_state["stip"]
     b = (stp["bonus"] if stp["bonus"] is not None else round(bonus_app * 100)) / 100
     tot_fissi = float(stp["fissi"]["Importo €"].sum()) if len(stp["fissi"]) else 0.0
+    fissi_bonus = (float(stp["fissi"].loc[stp["fissi"]["Con bonus"].astype(bool), "Importo €"].sum())
+                   if len(stp["fissi"]) else 0.0)
     tot_ci = stp["checkin"] * stp["tariffa"]
     base = tot_fissi + tot_ci
 
@@ -712,17 +719,20 @@ if sezione == STIPENDIO:
         return {"imponibile": imponibile, "inps": contributi, "imposta": imposta,
                 "netto": lordo - contributi - imposta}
 
-    scen = {"Bonus su tutto": base * (1 + b), "Bonus solo sui check-in": tot_fissi + tot_ci * (1 + b)}
+    # scenario 1: bonus sui fissi spuntati + check-in; scenario 2: bonus solo sui check-in
+    scen = {"Bonus su tutto": base + (fissi_bonus + tot_ci) * b, "Bonus solo sui check-in": base + tot_ci * b}
     calc = {k: netto(v) for k, v in scen.items()}
 
     st.markdown("#### Lordo del mese")
+    st.caption(f"Bonus calcolato su {euro(fissi_bonus)} di fissi con bonus + {euro(tot_ci)} di check-in "
+               "(prima colonna) oppure solo sui check-in (seconda colonna).")
     righe = [("Compensi fissi", tot_fissi, tot_fissi),
              (f"Check-in ({stp['checkin']} × {euro(stp['tariffa'])})", tot_ci, tot_ci),
              ("Totale prima del bonus", base, base),
-             (f"Bonus {b * 100:.0f}%", base * b, tot_ci * b),
+             (f"Bonus {b * 100:.0f}%", (fissi_bonus + tot_ci) * b, tot_ci * b),
              ("**Totale lordo**", scen["Bonus su tutto"], scen["Bonus solo sui check-in"])]
     tab = pd.DataFrame({"Voce": [r[0].replace("**", "") for r in righe],
-                        "Bonus su tutto": [euro(r[1]) for r in righe],
+                        "Bonus fisso + check-in": [euro(r[1]) for r in righe],
                         "Bonus solo check-in": [euro(r[2]) for r in righe]})
     st.dataframe(tab, hide_index=True, use_container_width=True)
 
@@ -730,7 +740,7 @@ if sezione == STIPENDIO:
     tab2 = pd.DataFrame({
         "Voce": [f"Reddito imponibile ({stp['coeff']:.0f}% del lordo)", f"INPS {stp['inps']:g}%",
                  f"Imposta sostitutiva {stp['imposta']:g}%", "Netto stimato"],
-        "Bonus su tutto": [euro(calc["Bonus su tutto"][k]) for k in ("imponibile", "inps", "imposta", "netto")],
+        "Bonus fisso + check-in": [euro(calc["Bonus su tutto"][k]) for k in ("imponibile", "inps", "imposta", "netto")],
         "Bonus solo check-in": [euro(calc["Bonus solo sui check-in"][k])
                                 for k in ("imponibile", "inps", "imposta", "netto")]})
     st.dataframe(tab2, hide_index=True, use_container_width=True)
@@ -738,7 +748,7 @@ if sezione == STIPENDIO:
     n1, n2 = calc["Bonus su tutto"]["netto"], calc["Bonus solo sui check-in"]["netto"]
     st.markdown(
         f'<div class="bm-kpi">'
-        f'<div class="bm-card bm-bonus"><div class="bm-lab">Netto · bonus su tutto</div>'
+        f'<div class="bm-card bm-bonus"><div class="bm-lab">Netto · bonus fisso + check-in</div>'
         f'<div class="bm-val" style="font-size:1.5rem">{euro(n1)}</div>'
         f'<div class="bm-note" style="color:#B9C7D6">lordo {euro(scen["Bonus su tutto"])}</div></div>'
         f'<div class="bm-card"><div class="bm-lab">Netto · bonus solo check-in</div>'
